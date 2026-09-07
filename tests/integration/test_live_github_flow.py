@@ -24,7 +24,18 @@ import pytest_asyncio
 
 from tests.integration.conftest import requires_credentials
 
-pytestmark = [pytest.mark.integration, requires_credentials]
+# The session-scoped fixtures (`live_client`, `github`) build their httpx clients
+# on the session event loop, and httpx keeps pooled TCP/TLS connections bound to
+# the loop that opened them. pytest-asyncio's default test loop scope is
+# "function", so without this marker every test would run on a *new* loop and
+# reuse connections belonging to an already-closed one
+# (RuntimeError: Event loop is closed). Running the tests on the same session
+# loop as the fixtures keeps one client, one loop, one connection pool.
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.asyncio(loop_scope="session"),
+    requires_credentials,
+]
 
 RUN_ID = uuid.uuid4().hex[:8]
 ORIGINAL_TITLE = f"[hw2-itest {RUN_ID}] created by the integration test"
