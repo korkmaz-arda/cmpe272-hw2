@@ -66,11 +66,17 @@ def _safe_json(response: httpx.Response) -> dict[str, Any]:
 def is_rate_limited(response: httpx.Response) -> bool:
     """Detect a rate-limit response.
 
-    GitHub does not always use 429: primary-limit rejections commonly arrive as
-    403 with ``x-ratelimit-remaining: 0``, and secondary limits arrive as 403
-    with ``retry-after``. All three shapes are treated as rate limiting.
+    A 429 is unambiguous and always counts, even when GitHub sends no
+    corroborating headers or message.
+
+    GitHub does not always use 429, though: primary-limit rejections commonly
+    arrive as 403 with ``x-ratelimit-remaining: 0``, and secondary limits as 403
+    with ``retry-after``. A 403 therefore needs one of those signals, so an
+    ordinary permission error stays a 403.
     """
-    if response.status_code not in (403, 429):
+    if response.status_code == 429:
+        return True
+    if response.status_code != 403:
         return False
     if response.headers.get("x-ratelimit-remaining") == "0":
         return True

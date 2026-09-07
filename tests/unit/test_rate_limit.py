@@ -37,6 +37,10 @@ class TestDetection:
     def test_429_with_headers(self):
         assert is_rate_limited(_response(429, {"x-ratelimit-remaining": "0"})) is True
 
+    def test_a_bare_429_counts_without_any_corroborating_signal(self):
+        """429 means Too Many Requests on its own — no headers, no message."""
+        assert is_rate_limited(_response(429)) is True
+
     @pytest.mark.parametrize("status", [200, 401, 404, 500])
     def test_other_statuses_are_never_rate_limiting(self, status):
         assert is_rate_limited(_response(status, {"x-ratelimit-remaining": "0"})) is False
@@ -83,6 +87,18 @@ class TestThroughTheApi:
         assert body["error"]["code"] == "rate_limited"
         assert 0 < body["error"]["details"]["retry_after"] <= 60
         assert response.headers["Retry-After"] == str(body["error"]["details"]["retry_after"])
+
+    async def test_a_bare_429_surfaces_as_429_not_400(self, client, httpx_mock):
+        """A 429 with no headers and no body must not fall through to 400."""
+        httpx_mock.add_response(method="GET", status_code=429)
+
+        response = await client.get("/issues")
+
+        assert response.status_code == 429
+        body = response.json()
+        assert body["error"]["code"] == "rate_limited"
+        assert body["error"]["details"]["retry_after"] == 60
+        assert response.headers["Retry-After"] == "60"
 
     async def test_429_with_retry_after_is_propagated(self, client, httpx_mock):
         httpx_mock.add_response(method="GET", status_code=429, headers={"retry-after": "30"})
