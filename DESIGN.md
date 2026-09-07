@@ -63,8 +63,9 @@ a broken upstream header must never fail a request.
 ## Rate limits
 
 GitHub signals rate limiting in at least three ways, so detecting only 429 would misclassify most
-of them. A response counts as rate-limited when its status is 403 **or** 429 **and** any of:
-`x-ratelimit-remaining: 0`, a `retry-after` header, or a body message mentioning a rate limit.
+of them. A **429 always counts**, with or without corroborating headers. A **403** counts when it
+carries any of `x-ratelimit-remaining: 0`, a `retry-after` header, or a body message mentioning a
+rate limit — requiring one of those signals is what keeps an ordinary permission error a 403.
 `Retry-After` is taken from the header, else computed from the `x-ratelimit-reset` epoch, else
 defaulted to 60 seconds, and returned both as a header and in `details.retry_after`.
 

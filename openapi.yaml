@@ -946,8 +946,9 @@ components:
 
     RateLimited:
       description: |
-        GitHub's rate limit was hit. Detected from `x-ratelimit-remaining`,
-        `retry-after`, or the upstream message — not from a 429 status alone.
+        GitHub's rate limit was hit. An upstream 429 always maps here; an upstream
+        403 does too when it carries `x-ratelimit-remaining: 0`, `retry-after`, or a
+        rate-limit message, since GitHub does not always use 429.
       headers:
         Retry-After:
           $ref: "#/components/headers/RetryAfter"
