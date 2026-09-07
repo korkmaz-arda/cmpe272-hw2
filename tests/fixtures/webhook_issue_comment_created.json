@@ -1,0 +1,7 @@
+{
+  "action": "created",
+  "issue": {"number": 42, "title": "Something is broken", "state": "open"},
+  "comment": {"id": 900001, "body": "Thanks for the report."},
+  "repository": {"full_name": "test-owner/test-repo"},
+  "sender": {"login": "test-owner"}
+}

@@ -1,0 +1,7 @@
+{
+  "id": 900001,
+  "body": "Thanks for the report.",
+  "user": {"login": "test-owner"},
+  "created_at": "2026-09-01T11:00:00Z",
+  "html_url": "https://github.com/test-owner/test-repo/issues/42#issuecomment-900001"
+}

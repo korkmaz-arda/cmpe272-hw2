@@ -1,0 +1,7 @@
+{
+  "message": "Validation Failed",
+  "errors": [
+    {"resource": "Issue", "field": "title", "code": "missing_field"}
+  ],
+  "documentation_url": "https://docs.github.com/rest/issues/issues#create-an-issue"
+}

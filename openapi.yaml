@@ -1,0 +1,991 @@
+openapi: 3.1.0
+
+info:
+  title: GitHub Issues API Wrapper
+  version: 1.0.0
+  summary: A small service wrapping the GitHub REST API for Issues in one configured repository.
+  description: |
+    Our own HTTP API for creating, reading, updating, and closing GitHub issues in a
+    single repository configured by environment variables, plus issue comments and a
+    secured webhook receiver.
+
+    **Closing an issue is the Delete half of CRUD.** There is deliberately no
+    `DELETE /issues/{number}`.
+
+    ### Authentication
+
+    Callers of this API do not authenticate. The GitHub fine-grained personal access
+    token is a **server-side** credential, read from the `GITHUB_TOKEN` environment
+    variable and used only for the service's own outbound calls to `api.github.com`.
+    It is never accepted from, nor exposed to, clients. Operations that need it are
+    marked with `x-upstream-security` (see the `githubServerAuth` security scheme);
+    they are not marked with `security`, because that would incorrectly instruct
+    callers to send the token themselves.
+
+    ### Errors
+
+    Every failure uses the same envelope:
+
+    ```json
+    {"error": {"code": "machine_readable_code", "message": "Human readable explanation"}}
+    ```
+
+    Request-validation failures are reported as **400**, not FastAPI's default 422.
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:{port}
+    description: Local development server
+    variables:
+      port:
+        default: "8000"
+        description: The value of the PORT environment variable.
+
+# Our API requires no caller authentication.
+security: []
+
+tags:
+  - name: issues
+    description: CRUD over GitHub issues, plus comments.
+  - name: webhook
+    description: Receiver for GitHub webhook deliveries.
+  - name: events
+    description: Recently processed webhook deliveries.
+  - name: health
+    description: Liveness.
+
+paths:
+  /issues:
+    post:
+      tags: [issues]
+      operationId: createIssue
+      summary: Create an issue
+      description: |
+        Creates an issue in the configured repository.
+        Requires server-side GitHub authentication.
+      x-upstream-security: [githubServerAuth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateIssueRequest"
+            examples:
+              minimal:
+                summary: Title only
+                value:
+                  title: Something is broken
+              full:
+                summary: Title, body, and labels
+                value:
+                  title: Something is broken
+                  body: Steps to reproduce...
+                  labels: [bug, help wanted]
+      responses:
+        "201":
+          description: Issue created.
+          headers:
+            Location:
+              description: Path of the newly created issue on this API.
+              schema:
+                type: string
+                examples: ["/issues/42"]
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Issue"
+              examples:
+                created:
+                  $ref: "#/components/examples/IssueExample"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/GitHubUnauthorized"
+        "403":
+          $ref: "#/components/responses/GitHubForbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/GitHubUnavailable"
+
+    get:
+      tags: [issues]
+      operationId: listIssues
+      summary: List issues
+      description: |
+        Lists issues from the configured repository.
+
+        GitHub's pagination semantics are preserved exactly: the upstream `Link`
+        header is forwarded unchanged and entries are **not** filtered, so a page
+        may include pull requests just as GitHub's own Issues endpoint does.
+
+        Requires server-side GitHub authentication.
+      x-upstream-security: [githubServerAuth]
+      parameters:
+        - name: state
+          in: query
+          required: false
+          description: Which issues to return.
+          schema:
+            type: string
+            enum: [open, closed, all]
+            default: open
+        - name: labels
+          in: query
+          required: false
+          description: Comma-separated list of label names.
+          schema:
+            type: string
+          example: bug,help wanted
+        - name: page
+          in: query
+          required: false
+          description: 1-based page number, forwarded to GitHub.
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: per_page
+          in: query
+          required: false
+          description: Results per page. GitHub's maximum is 100.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 30
+      responses:
+        "200":
+          description: A page of issues.
+          headers:
+            Link:
+              description: GitHub's pagination header, forwarded verbatim.
+              schema:
+                type: string
+              example: '<https://api.github.com/repositories/1/issues?page=2>; rel="next"'
+            X-Page:
+              description: The page number that was requested.
+              schema:
+                type: integer
+            X-Per-Page:
+              description: The page size that was requested.
+              schema:
+                type: integer
+            X-Next-Page:
+              description: Page number of the `next` link, when GitHub provided one.
+              schema:
+                type: integer
+            X-Prev-Page:
+              description: Page number of the `prev` link, when GitHub provided one.
+              schema:
+                type: integer
+            X-First-Page:
+              description: Page number of the `first` link, when GitHub provided one.
+              schema:
+                type: integer
+            X-Last-Page:
+              description: Page number of the `last` link, when GitHub provided one.
+              schema:
+                type: integer
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Issue"
+              examples:
+                page:
+                  summary: One page of issues
+                  value:
+                    - number: 42
+                      html_url: https://github.com/test-owner/test-repo/issues/42
+                      state: open
+                      title: Something is broken
+                      body: Steps to reproduce...
+                      labels: [bug]
+                      created_at: "2026-09-01T10:00:00Z"
+                      updated_at: "2026-09-01T10:00:00Z"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/GitHubUnauthorized"
+        "403":
+          $ref: "#/components/responses/GitHubForbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/GitHubUnavailable"
+
+  /issues/{number}:
+    parameters:
+      - $ref: "#/components/parameters/IssueNumber"
+    get:
+      tags: [issues]
+      operationId: getIssue
+      summary: Get one issue
+      description: Requires server-side GitHub authentication.
+      x-upstream-security: [githubServerAuth]
+      responses:
+        "200":
+          description: The issue.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Issue"
+              examples:
+                issue:
+                  $ref: "#/components/examples/IssueExample"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/GitHubUnauthorized"
+        "403":
+          $ref: "#/components/responses/GitHubForbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/GitHubUnavailable"
+
+    patch:
+      tags: [issues]
+      operationId: updateIssue
+      summary: Update, close, or reopen an issue
+      description: |
+        Renames the issue, edits its body, closes it, or reopens it.
+        Setting `state` to `closed` is this API's Delete operation; there is no
+        `DELETE /issues/{number}`.
+
+        Only the fields present in the request are forwarded to GitHub, so an
+        omitted field is left untouched while an explicit `"body": null` clears
+        the body.
+
+        Requires server-side GitHub authentication.
+      x-upstream-security: [githubServerAuth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateIssueRequest"
+            examples:
+              rename:
+                summary: Rename
+                value:
+                  title: A clearer title
+              editBody:
+                summary: Edit the body
+                value:
+                  body: Updated reproduction steps.
+              close:
+                summary: Close (the Delete operation)
+                value:
+                  state: closed
+              reopen:
+                summary: Reopen
+                value:
+                  state: open
+      responses:
+        "200":
+          description: The updated issue.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Issue"
+              examples:
+                closed:
+                  summary: After closing
+                  value:
+                    number: 42
+                    html_url: https://github.com/test-owner/test-repo/issues/42
+                    state: closed
+                    title: Something is broken
+                    body: Steps to reproduce...
+                    labels: []
+                    created_at: "2026-09-01T10:00:00Z"
+                    updated_at: "2026-09-02T12:00:00Z"
+        "400":
+          description: |
+            Invalid update payload — an unknown field, an empty object, a blank
+            title, or a `state` other than `open`/`closed`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invalidState:
+                  summary: Invalid state value
+                  value:
+                    error:
+                      code: invalid_request
+                      message: The request payload or parameters are invalid.
+                      details:
+                        fields:
+                          - loc: body.state
+                            msg: "Input should be 'open' or 'closed'"
+                            type: literal_error
+                noFields:
+                  summary: Nothing to update
+                  value:
+                    error:
+                      code: invalid_request
+                      message: The request payload or parameters are invalid.
+        "401":
+          $ref: "#/components/responses/GitHubUnauthorized"
+        "403":
+          $ref: "#/components/responses/GitHubForbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/GitHubUnavailable"
+
+  /issues/{number}/comments:
+    parameters:
+      - $ref: "#/components/parameters/IssueNumber"
+    post:
+      tags: [issues]
+      operationId: createComment
+      summary: Comment on an issue
+      description: Requires server-side GitHub authentication.
+      x-upstream-security: [githubServerAuth]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCommentRequest"
+            examples:
+              comment:
+                value:
+                  body: Thanks for the report.
+      responses:
+        "201":
+          description: Comment created.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Comment"
+              examples:
+                created:
+                  value:
+                    id: 900001
+                    body: Thanks for the report.
+                    user: test-owner
+                    created_at: "2026-09-01T11:00:00Z"
+                    html_url: https://github.com/test-owner/test-repo/issues/42#issuecomment-900001
+        "400":
+          description: Missing, empty, or whitespace-only comment body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                blankBody:
+                  value:
+                    error:
+                      code: invalid_request
+                      message: The request payload or parameters are invalid.
+                      details:
+                        fields:
+                          - loc: body.body
+                            msg: String should have at least 1 character
+                            type: string_too_short
+        "401":
+          $ref: "#/components/responses/GitHubUnauthorized"
+        "403":
+          $ref: "#/components/responses/GitHubForbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/GitHubUnavailable"
+
+  /webhook:
+    post:
+      tags: [webhook]
+      operationId: receiveWebhook
+      summary: Receive a GitHub webhook delivery
+      description: |
+        Verifies the `X-Hub-Signature-256` HMAC-SHA256 digest over the exact raw
+        request body using `WEBHOOK_SECRET`, then records the delivery in SQLite.
+
+        Deliveries are deduplicated on `(X-GitHub-Delivery, action)`, so GitHub's
+        "Redeliver" button is a safe no-op. Supported events are `issues`,
+        `issue_comment`, and `ping`; any other event or action is rejected with 400.
+
+        This endpoint is called by GitHub, not by API clients, and is authenticated
+        by the signature rather than by a bearer token.
+      parameters:
+        - name: X-Hub-Signature-256
+          in: header
+          required: true
+          description: HMAC-SHA256 of the raw body, keyed with `WEBHOOK_SECRET`.
+          schema:
+            type: string
+            pattern: "^sha256=[0-9a-f]{64}$"
+          example: sha256=7d38cdd689735b008b3c702edd92eea23791c5f6f2d2e93f4e0d4b6f2e0d1a2b
+        - name: X-GitHub-Event
+          in: header
+          required: true
+          description: The event name.
+          schema:
+            type: string
+            enum: [issues, issue_comment, ping]
+        - name: X-GitHub-Delivery
+          in: header
+          required: true
+          description: |
+            GUID of this delivery. Required: with `action` it forms the
+            deduplication key.
+          schema:
+            type: string
+            minLength: 1
+          example: 11111111-2222-3333-4444-555555555555
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebhookEvent"
+            examples:
+              issueOpened:
+                summary: issues / opened
+                value:
+                  action: opened
+                  issue:
+                    number: 42
+                    title: Something is broken
+                    state: open
+              commentCreated:
+                summary: issue_comment / created
+                value:
+                  action: created
+                  issue:
+                    number: 42
+                  comment:
+                    id: 900001
+                    body: Thanks for the report.
+              ping:
+                summary: ping
+                value:
+                  zen: Non-blocking is better than blocking.
+                  hook_id: 123456
+      responses:
+        "204":
+          description: |
+            Delivery accepted, or already recorded. No response body.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestId"
+        "400":
+          description: |
+            Unsupported event, unsupported/missing action, missing delivery id, or a
+            body that is not a JSON object.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                unsupportedEvent:
+                  value:
+                    error:
+                      code: unsupported_event
+                      message: "Unsupported webhook event: 'star'."
+                unsupportedAction:
+                  value:
+                    error:
+                      code: unsupported_action
+                      message: "Unsupported action for 'issues' event: 'exploded'."
+                missingDeliveryId:
+                  value:
+                    error:
+                      code: missing_delivery_id
+                      message: The X-GitHub-Delivery header is required.
+        "401":
+          description: Signature verification failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invalidSignature:
+                  value:
+                    error:
+                      code: invalid_signature
+                      message: Webhook signature verification failed.
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          description: |
+            The delivery could not be persisted. Deliberately not acknowledged, so
+            GitHub can redeliver it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                storageUnavailable:
+                  value:
+                    error:
+                      code: storage_unavailable
+                      message: The delivery could not be stored. GitHub may safely redeliver it.
+
+  /events:
+    get:
+      tags: [events]
+      operationId: listEvents
+      summary: List recently processed webhook deliveries
+      description: |
+        Returns the most recently stored webhook deliveries, newest first. Intended
+        for debugging and for verifying a live webhook integration.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of deliveries to return.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 20
+      responses:
+        "200":
+          description: Recent deliveries.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestId"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/EventRecord"
+              examples:
+                recent:
+                  value:
+                    - id: 11111111-2222-3333-4444-555555555555
+                      event: issues
+                      action: opened
+                      issue_number: 42
+                      timestamp: "2026-09-06T12:00:00.000+00:00"
+                    - id: 66666666-7777-8888-9999-000000000000
+                      event: ping
+                      action: ping
+                      issue_number: null
+                      timestamp: "2026-09-06T11:59:00.000+00:00"
+        "400":
+          description: The `limit` parameter is out of range.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                badLimit:
+                  value:
+                    error:
+                      code: invalid_request
+                      message: The request payload or parameters are invalid.
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /healthz:
+    get:
+      tags: [health]
+      operationId: healthz
+      summary: Liveness probe
+      description: |
+        Returns 200 while the process is serving. Deliberately performs no GitHub or
+        database work, so an upstream rate limit never reads as an unhealthy service.
+      responses:
+        "200":
+          description: The service is up.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              examples:
+                ok:
+                  value:
+                    status: ok
+
+components:
+  securitySchemes:
+    githubServerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: GitHub fine-grained personal access token
+      description: |
+        **Server-side credential — never sent by callers of this API.**
+
+        The service authenticates its own outbound requests to `api.github.com`
+        with `Authorization: Bearer <GITHUB_TOKEN>`, using a fine-grained PAT
+        scoped to the single configured repository with `Issues: Read and write`.
+
+        This scheme documents that downstream authentication. It is referenced by
+        `x-upstream-security` on the operations that need it, and deliberately not
+        by `security`, because clients must never send this token.
+
+  parameters:
+    IssueNumber:
+      name: number
+      in: path
+      required: true
+      description: The GitHub issue number. Must be a positive integer.
+      schema:
+        type: integer
+        minimum: 1
+      example: 42
+
+  headers:
+    XRequestId:
+      description: Correlation id for this request, echoed from `X-Request-ID` when safe.
+      schema:
+        type: string
+      example: 9f1c2b7a4d5e4f0b8c3a1d2e3f4a5b6c
+    RetryAfter:
+      description: Seconds to wait before retrying.
+      schema:
+        type: integer
+      example: 60
+
+  schemas:
+    Issue:
+      type: object
+      description: An issue, in this API's shape (not GitHub's raw payload).
+      required: [number, html_url, state, title, labels, created_at, updated_at]
+      properties:
+        number:
+          type: integer
+          examples: [42]
+        html_url:
+          type: string
+          format: uri
+        state:
+          type: string
+          enum: [open, closed]
+        title:
+          type: string
+        body:
+          type: [string, "null"]
+        labels:
+          type: array
+          items:
+            type: string
+          examples: [["bug", "help wanted"]]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Comment:
+      type: object
+      description: An issue comment, in this API's shape.
+      required: [id, body, created_at, html_url]
+      properties:
+        id:
+          type: integer
+          examples: [900001]
+        body:
+          type: string
+        user:
+          type: [string, "null"]
+          description: The commenter's GitHub login.
+        created_at:
+          type: string
+          format: date-time
+        html_url:
+          type: string
+          format: uri
+
+    Error:
+      type: object
+      description: The single error envelope used by every failure response.
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable, machine-readable error code.
+              examples: [invalid_request, not_found, rate_limited]
+            message:
+              type: string
+              description: Human-readable explanation. Never contains a raw GitHub body.
+            details:
+              type: object
+              description: Optional structured context.
+              additionalProperties: true
+
+    CreateIssueRequest:
+      type: object
+      additionalProperties: false
+      required: [title]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          description: Required. Whitespace-only titles are rejected with 400.
+        body:
+          type: [string, "null"]
+        labels:
+          type: array
+          items:
+            type: string
+
+    UpdateIssueRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: |
+        At least one field must be present. `title` and `state` may not be null;
+        an explicit `"body": null` clears the issue body.
+      properties:
+        title:
+          type: string
+          minLength: 1
+        body:
+          type: [string, "null"]
+        state:
+          type: string
+          enum: [open, closed]
+
+    CreateCommentRequest:
+      type: object
+      additionalProperties: false
+      required: [body]
+      properties:
+        body:
+          type: string
+          minLength: 1
+          description: Required. Whitespace-only bodies are rejected with 400.
+
+    WebhookEvent:
+      type: object
+      description: |
+        A GitHub webhook payload. Only the fields this service reads are described;
+        GitHub sends many more.
+      properties:
+        action:
+          type: string
+          description: |
+            Required for `issues` and `issue_comment` deliveries; absent for `ping`.
+          examples: [opened, closed, reopened, created]
+        issue:
+          type: object
+          properties:
+            number:
+              type: integer
+            title:
+              type: string
+            state:
+              type: string
+        comment:
+          type: object
+          properties:
+            id:
+              type: integer
+            body:
+              type: string
+        zen:
+          type: string
+          description: Present on `ping` deliveries.
+        hook_id:
+          type: integer
+          description: Present on `ping` deliveries.
+
+    EventRecord:
+      type: object
+      description: One stored webhook delivery.
+      required: [id, event, action, timestamp]
+      properties:
+        id:
+          type: string
+          description: The GitHub delivery id (`X-GitHub-Delivery`).
+        event:
+          type: string
+          examples: [issues, issue_comment, ping]
+        action:
+          type: string
+          description: The payload action; `ping` for ping deliveries.
+        issue_number:
+          type: [integer, "null"]
+        timestamp:
+          type: string
+          format: date-time
+
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          examples: [ok]
+
+  examples:
+    IssueExample:
+      summary: An open issue
+      value:
+        number: 42
+        html_url: https://github.com/test-owner/test-repo/issues/42
+        state: open
+        title: Something is broken
+        body: Steps to reproduce...
+        labels: [bug, help wanted]
+        created_at: "2026-09-01T10:00:00Z"
+        updated_at: "2026-09-01T10:00:00Z"
+
+  responses:
+    BadRequest:
+      description: The request payload or parameters are invalid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            missingTitle:
+              summary: Missing or blank title
+              value:
+                error:
+                  code: invalid_request
+                  message: The request payload or parameters are invalid.
+                  details:
+                    fields:
+                      - loc: body.title
+                        msg: Field required
+                        type: missing
+            perPageTooLarge:
+              summary: per_page above 100
+              value:
+                error:
+                  code: invalid_request
+                  message: The request payload or parameters are invalid.
+            githubValidation:
+              summary: GitHub rejected the request
+              value:
+                error:
+                  code: github_validation_failed
+                  message: "GitHub rejected the request: Validation Failed"
+                  details:
+                    github_errors:
+                      - resource: Issue
+                        field: title
+                        code: missing_field
+
+    GitHubUnauthorized:
+      description: The service could not authenticate to GitHub.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            unauthorized:
+              value:
+                error:
+                  code: github_unauthorized
+                  message: GitHub authentication failed. Check that GITHUB_TOKEN is set and still valid.
+
+    GitHubForbidden:
+      description: GitHub denied access to the resource.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            forbidden:
+              value:
+                error:
+                  code: github_forbidden
+                  message: >-
+                    GitHub denied access to this resource. Check the token's repository
+                    permissions (Issues: Read and write).
+
+    NotFound:
+      description: The requested resource does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            notFound:
+              value:
+                error:
+                  code: not_found
+                  message: The requested GitHub resource was not found.
+
+    RateLimited:
+      description: |
+        GitHub's rate limit was hit. Detected from `x-ratelimit-remaining`,
+        `retry-after`, or the upstream message — not from a 429 status alone.
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            rateLimited:
+              value:
+                error:
+                  code: rate_limited
+                  message: GitHub API rate limit exceeded.
+                  details:
+                    retry_after: 60
+
+    GitHubUnavailable:
+      description: GitHub is temporarily unavailable, timed out, or was unreachable.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            unavailable:
+              value:
+                error:
+                  code: github_unavailable
+                  message: GitHub is temporarily unavailable. Please retry shortly.
+
+    InternalError:
+      description: An unexpected error inside this service.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            internal:
+              value:
+                error:
+                  code: internal_error
+                  message: An unexpected internal error occurred.

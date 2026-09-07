@@ -1,0 +1,6 @@
+{
+  "action": "opened",
+  "issue": {"number": 42, "title": "Something is broken", "state": "open"},
+  "repository": {"full_name": "test-owner/test-repo"},
+  "sender": {"login": "test-owner"}
+}

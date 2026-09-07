@@ -1,0 +1,11 @@
+{
+  "number": 43,
+  "html_url": "https://github.com/test-owner/test-repo/pull/43",
+  "state": "open",
+  "title": "Fix the thing",
+  "body": "A pull request, which GitHub also returns from the issues endpoint.",
+  "labels": [],
+  "created_at": "2026-09-03T10:00:00Z",
+  "updated_at": "2026-09-03T10:00:00Z",
+  "pull_request": {"url": "https://api.github.com/repos/test-owner/test-repo/pulls/43"}
+}
