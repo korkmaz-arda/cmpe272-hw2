@@ -88,7 +88,7 @@ One module, one job:
 ## Requirements
 
 - **Python 3.12**
-- A GitHub repository you own, for testing
+- A GitHub repository for testing
 - A GitHub fine-grained personal access token
 - Optionally: Docker, and a tunnel tool (ngrok / Cloudflare Tunnel / smee) for live webhooks
 
