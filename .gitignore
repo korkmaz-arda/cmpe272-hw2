@@ -1,7 +1,7 @@
 # Secrets — never commit the real environment file
 .env
 .env.*
-.env.example
+!.env.example
 
 # Local webhook database
 data/
